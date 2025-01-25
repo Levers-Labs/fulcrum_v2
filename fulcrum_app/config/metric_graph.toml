@@ -1,0 +1,40 @@
+[[metrics]]
+id = "metric_1"
+label = "Metric One"
+definition = "Example metric"
+unit = "n"
+owner_team = "Sales"
+
+[metrics.formula]
+expression_str = "{AcceptOpps} * {SQOToWinRate}"
+
+[[metrics.influences]]
+source = "some_other_metric"
+strength = 0.8
+confidence = 0.7
+
+[[metrics.dimensions]]
+id = "region"
+label = "Region"
+reference = "account_region"
+cube = "dim_opportunity"
+member_type = "dimension"
+
+[metrics.metadata]
+cube = "some_cube"
+member = "metric_1_member"
+member_type = "measure"
+time_dimension = "created_at"
+
+[[metrics]]
+id = "some_other_metric"
+label = "Some Other Metric"
+definition = "A second metric for demonstration"
+unit = "n"
+owner_team = "Marketing"
+
+[metrics.metadata]
+cube = "some_cube"
+member = "some_other_metric_member"
+member_type = "measure"
+time_dimension = "created_at"
