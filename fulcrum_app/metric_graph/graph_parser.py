@@ -1,6 +1,5 @@
 import toml
 from typing import Any, Dict
-
 from .graph_models import (
     MetricGraph,
     MetricDefinition,
@@ -8,13 +7,9 @@ from .graph_models import (
     DimensionDefinition,
     FormulaDefinition
 )
-
+from .formula_parser import parse_formula_references
 
 def parse_metric_graph_toml(toml_str: str) -> MetricGraph:
-    """
-    Parse a TOML string representing the metric graph
-    and return a MetricGraph object.
-    """
     data = toml.loads(toml_str)
     raw_metrics = data.get("metrics", [])
 
@@ -24,9 +19,7 @@ def parse_metric_graph_toml(toml_str: str) -> MetricGraph:
 
     return MetricGraph(metrics=metric_defs)
 
-
 def _parse_single_metric(raw_m: Dict[str, Any]) -> MetricDefinition:
-    """Helper that parses a single [[metrics]] block into a MetricDefinition."""
     metric_id = raw_m["id"]
     label = raw_m.get("label", metric_id)
     definition = raw_m.get("definition", "")
@@ -36,28 +29,35 @@ def _parse_single_metric(raw_m: Dict[str, Any]) -> MetricDefinition:
     # Formula
     formula_data = raw_m.get("formula")
     formula = None
+    formula_references = []
     if formula_data and "expression_str" in formula_data:
-        formula = FormulaDefinition(expression_str=formula_data["expression_str"])
+        expr = formula_data["expression_str"]
+        formula = FormulaDefinition(expression_str=expr)
+        formula_references = parse_formula_references(expr)
 
     # Influences
     influences_list = []
     for inf in raw_m.get("influences", []):
-        influences_list.append(InfluenceDefinition(
-            source=inf["source"],
-            strength=inf["strength"],
-            confidence=inf["confidence"]
-        ))
+        influences_list.append(
+            InfluenceDefinition(
+                source=inf["source"],
+                strength=inf["strength"],
+                confidence=inf["confidence"]
+            )
+        )
 
     # Dimensions
     dims_list = []
     for dim in raw_m.get("dimensions", []):
-        dims_list.append(DimensionDefinition(
-            id=dim["id"],
-            label=dim["label"],
-            reference=dim["reference"],
-            cube=dim["cube"],
-            member_type=dim["member_type"]
-        ))
+        dims_list.append(
+            DimensionDefinition(
+                id=dim["id"],
+                label=dim["label"],
+                reference=dim["reference"],
+                cube=dim["cube"],
+                member_type=dim["member_type"]
+            )
+        )
 
     # Metadata
     metadata = raw_m.get("metadata", {})
@@ -73,6 +73,7 @@ def _parse_single_metric(raw_m: Dict[str, Any]) -> MetricDefinition:
         unit=unit,
         owner_team=owner_team,
         formula=formula,
+        formula_references=formula_references,  # <-- new field
         influences=influences_list,
         dimensions=dims_list,
         cube=cube,
