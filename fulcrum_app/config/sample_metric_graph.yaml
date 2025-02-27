@@ -1,0 +1,119 @@
+metrics:
+  #############################################################
+  # 1. total_revenue
+  #############################################################
+  total_revenue:
+    label: "Total Revenue"
+    type: "sum"
+    anchor_date: "sale_date"
+    semantic_layer_ref: "cube.sales.revenue"
+    dimensions:
+      - time
+      - region
+      - product_category
+
+    formulas:
+      - name: "basic_addition"
+        expression: "product_revenue + service_revenue"
+
+      # This is an example of a second, alternative derivation:
+      # - name: "alt_derivation"
+      #   expression: "some_other_metric * 1.08"
+
+    influences: []
+    # no influences (i.e., total_revenue does not claim to 'drive' any other metric)
+    # If you do want to show that total_revenue influences something else, you would add:
+    #
+    # influences:
+    #   - metric: "profit"
+    #     evidence_standard: "Correlative"
+    #     evidence_strength: 90
+    #     relationship_strength: 0.5
+    #     type: "Direct"
+
+  #############################################################
+  # 2. product_revenue
+  #############################################################
+  product_revenue:
+    label: "Product Revenue"
+    type: "sum"
+    anchor_date: "sale_date"
+    semantic_layer_ref: "cube.sales.product_revenue"
+    dimensions:
+      - time
+      - region
+      - product_category
+
+    # product_revenue might be a base measure from the semantic layer,
+    # so we may not need formulas here
+    formulas: []
+
+    # Suppose we want to say that product_revenue influences marketing_spend
+    influences:
+      - metric: "marketing_spend"
+        evidence_standard: "Qualitative"
+        evidence_strength_label: "Weak"
+        relationship_strength_label: "Weak"
+        notes: "Possible cyclical effect: more product revenue could drive bigger marketing budgets."
+        type: "Direct"
+
+  #############################################################
+  # 3. service_revenue
+  #############################################################
+  service_revenue:
+    label: "Service Revenue"
+    type: "sum"
+    anchor_date: "service_date"
+    semantic_layer_ref: "cube.services.service_revenue"
+    dimensions:
+      - time
+      - region
+      - service_type
+
+    formulas: []
+    influences: []
+
+  #############################################################
+  # 4. marketing_spend
+  #############################################################
+  marketing_spend:
+    label: "Marketing Spend"
+    type: "sum"
+    anchor_date: "spend_date"
+    semantic_layer_ref: "cube.marketing.spend"
+    dimensions:
+      - time
+      - region
+      - campaign_channel
+
+    formulas: []
+    influences:
+      - metric: "active_users"
+        evidence_standard: "Correlative"
+        evidence_strength_label: "Conclusive"
+        evidence_strength: 95
+        relationship_strength_label: "Strong"
+        relationship_strength: 0.8
+        type: "Direct"
+        notes: "Based on Q1 2025 A/B test"
+
+  #############################################################
+  # 5. active_users
+  #############################################################
+  active_users:
+    label: "Active Users"
+    type: "count"
+    anchor_date: "user_signup_date"
+    semantic_layer_ref: "cube.users.active_users"
+    dimensions:
+      - time
+      - region
+      - user_type
+
+    # Example formula: active_users might be
+    # the distinct count of user IDs who have activity
+    formulas:
+      - name: "distinct_count"
+        expression: "COUNT_DISTINCT(user_id)"  # symbolic expression
+
+    influences: []

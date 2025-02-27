@@ -1,72 +1,111 @@
-import pandas as pd
-from typing import Dict
-from ..data_structures import PatternOutput
-from ..primitives.time_series_growth import calculate_pop_growth, calculate_rolling_averages
-from ..primitives.descriptive_stats import calculate_descriptive_stats
+{
+  "schemaVersion": "1.0.0",
+  "patternName": "HistoricalPerformance",
+  "metricId": "string",
+  "grain": "day" | "week" | "month",
 
-class HistoricalPerformancePattern:
-    """
-    Analyzes the metric's historical record for growth rates, rolling averages, 
-    and basic descriptive stats.
-    """
+  // Key dates/times
+  "analysisDate": "YYYY-MM-DD",
+  "evaluationTime": "YYYY-MM-DD HH:mm:ss",
 
-    PATTERN_NAME = "HistoricalPerformance"
-    PATTERN_VERSION = "1.0"
+  // Lookback info
+  "lookbackStart": "YYYY-MM-DD",
+  "lookbackEnd": "YYYY-MM-DD",
+  "numPeriodsAnalyzed": 12,
 
-    def run(
-        self, 
-        metric_id: str, 
-        data: pd.DataFrame, 
-        analysis_window: Dict[str, str],
-        pop_window: int = 1,
-        rolling_window: int = 7
-    ) -> PatternOutput:
-        """
-        Parameters
-        ----------
-        metric_id : str
-        data : pd.DataFrame
-            Must have ['date','value']. We'll sort by date ascending.
-        analysis_window : dict
-        pop_window : int, default=1
-            If we want day-over-day or month-over-month, typically pop_window=1. 
-            But we might do a weekly approach if the data is weekly.
-        rolling_window : int, default=7
-            For rolling average smoothing.
+  // PoP growth details across each period in the lookback
+  // E.g. if grain=week and numPeriodsAnalyzed=12, you might store 12 growth entries
+  "popGrowthRatesOverWindow": [
+    {
+      "periodStart": "YYYY-MM-DD",
+      "periodEnd": "YYYY-MM-DD",
+      "popGrowthPercent": 3.2
+    },
+    // ...
+  ],
 
-        Returns
-        -------
-        PatternOutput
-            results={
-               "pop_growth_series": list of pop_growth values (same length as data),
-               "rolling_avg": list of rolling means,
-               "descriptive_stats": {min, max, mean, etc.}
-            }
-        """
-        if data.empty:
-            return PatternOutput(self.PATTERN_NAME, self.PATTERN_VERSION, metric_id, analysis_window, 
-                                 results={"message":"no_data"})
+  // The "acceleration" or second derivative of the growth rate
+  "accelerationRatesOverWindow": [
+    {
+      "periodStart": "YYYY-MM-DD",
+      "periodEnd": "YYYY-MM-DD",
+      "popAccelerationPercent": 1.1  // (growth this period - growth previous period)
+    }
+    // ...
+  ],
 
-        data = data.sort_values("date")
-        # compute pop growth
-        pop_df = calculate_pop_growth(data, value_col="value")  # pop_window=1 is baked in; you can adapt if needed
-        # compute rolling average
-        roll_df = calculate_rolling_averages(pop_df, value_col="value", window=rolling_window)
+  // Summaries for current vs. average growth
+  "currentPopGrowthPercent": 8.5,
+  "averagePopGrowthPercentOverWindow": 5.0,
+  "currentGrowthAcceleration": 3.5,             // difference from average, or from prior
 
-        # stats
-        stats = calculate_descriptive_stats(data, value_col="value")
+  // If we detect acceleration or slowing, how many periods in a row?
+  "numPeriodsAccelerating": 2,
+  "numPeriodsSlowing": 0,
 
-        # assemble results
-        # we might store the entire pop_growth as a list, or just the final. We'll store the entire.
-        results = {
-            "pop_growth_series": roll_df["pop_growth"].tolist(),
-            "rolling_avg": roll_df["rolling_avg"].tolist(),
-            "descriptive_stats": stats
-        }
-        return PatternOutput(
-            self.PATTERN_NAME,
-            self.PATTERN_VERSION,
-            metric_id,
-            analysis_window,
-            results
-        )
+  // Trend classification
+  "trendType": "Stable" | "New Upward" | "New Downward" | "Plateau" | "None",
+  "trendStartDate": "YYYY-MM-DD",
+  "trendAveragePopGrowth": 4.2,
+
+  // Previous trend info
+  "previousTrendType": "Stable",
+  "previousTrendStartDate": "YYYY-MM-DD",
+  "previousTrendAveragePopGrowth": 2.1,
+  "previousTrendDurationGrains": 6,
+
+  // Record values
+  "recordHigh": {
+    "value": 1000,
+    "rank": 1,
+    "numPeriodsCompared": 36,
+
+    "priorRecordHighValue": 950,
+    "priorRecordHighDate": "YYYY-MM-DD",
+    "absoluteDeltaFromPriorRecord": 50,
+    "relativeDeltaFromPriorRecord": 5.26 // (50/950)*100
+  },
+  "recordLow": {
+    "value": 300,
+    "rank": 2,
+    "numPeriodsCompared": 36,
+
+    "priorRecordLowValue": 305,
+    "priorRecordLowDate": "YYYY-MM-DD",
+    "absoluteDeltaFromPriorRecord": -5,
+    "relativeDeltaFromPriorRecord": -1.64
+  },
+
+  // Seasonal analysis
+  "seasonality": {
+    "isFollowingExpectedPattern": true,
+    "expectedChangePercent": 10.0,
+    "actualChangePercent": 9.2,
+    "deviationPercent": -0.8
+  },
+
+  // Benchmark comparisons for typical reference periods
+  // For day grain: priorWTD, MTD, priorQTD, priorYTD
+  // For week grain: priorWeekOfMonth, priorWeekOfQuarter, priorWeekOfYear
+  // For month grain: priorMonthOfQuarter, priorMonthOfYear
+  "benchmarkComparisons": [
+    {
+      "referencePeriod": "priorWTD", // or "MTD", "priorQTD", etc.
+      "absoluteChange": 30.0,       // current - reference
+      "changePercent": 5.5
+    },
+    // ...
+  ],
+
+  // Trend exceptions (spike/drop), with absolute delta from normal range
+  "trendExceptions": [
+    {
+      "type": "Spike" | "Drop",
+      "currentValue": 950,
+      "normalRangeLow": 800,
+      "normalRangeHigh": 900,
+      "absoluteDeltaFromNormalRange": 50,  // e.g. 950 - 900 or 800 - 750
+      "magnitudePercent": 5.6             // optional or used similarly
+    }
+  ]
+}

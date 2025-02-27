@@ -1,12 +1,14 @@
+# fulcrum_app/storytelling_engine/story_generator.py
+
 from typing import List
 from fulcrum_app.intelligence_engine.data_structures import PatternOutput
-from .data_structures import Story
+from .story_data_structures import Story
 from .story_templates import STORY_TEMPLATE_REGISTRY
 
 class StoryGenerator:
     """
-    Takes in PatternOutput objects and produces user-facing stories
-    by applying template logic.
+    Takes PatternOutput objects and produces user-facing Story objects
+    by mapping to known templates or fallback logic.
     """
 
     def __init__(self):
@@ -16,48 +18,33 @@ class StoryGenerator:
         """
         Convert a single PatternOutput into zero or more Story objects.
         """
-        # 1) Identify pattern name
-        pname = pattern_output.pattern_name
-
-        # 2) Extract results we need
-        results_dict = {
+        pattern_name = pattern_output.pattern_name
+        results = {
             **pattern_output.results,
-            "metric_id": pattern_output.metric_id,
-            "analysis_window": pattern_output.analysis_window,
+            "metric_id": pattern_output.metric_id  # so templates can reference
         }
+        analysis_window = pattern_output.analysis_window
 
-        # We'll create logic for performance_status as an example
-        if pname == "performance_status":
-            final_status = results_dict.get("final_status", "no_data")
-            if final_status == "no_data":
-                scenario = "no_data"
-            elif final_status == "on_track":
-                scenario = "on_track"
-            elif final_status == "off_track":
-                scenario = "off_track"
-            else:
-                scenario = "off_track"  # default if unknown
-
-            # Attempt to find a matching template
-            tpl = STORY_TEMPLATE_REGISTRY.get((pname, scenario))
-            if tpl:
-                story = tpl(results_dict)
+        if pattern_name == "performance_status":
+            # typical scenario is results["status"] => 'on_track','off_track','no_data' ...
+            final_status = results.get("status", "no_data")
+            # find a matching template in STORY_TEMPLATE_REGISTRY
+            key = (pattern_name, final_status)
+            if key in STORY_TEMPLATE_REGISTRY:
+                story_fn = STORY_TEMPLATE_REGISTRY[key]
+                story = story_fn(results, analysis_window)
                 return [story]
             else:
-                # No matching template => skip or produce fallback story
+                # no matching template => produce fallback or empty
                 return []
-        
-        elif pname == "root_cause":
-            # Example: you might produce multiple stories from root causes
-            # We'll skip for now:
-            return []
         else:
-            # Patterns we don't have a template for
+            # Patterns we haven't mapped => produce fallback or empty
             return []
 
     def generate_stories(self, pattern_outputs: List[PatternOutput]) -> List[Story]:
         """
-        Convert a list of PatternOutput objects into a list of Story objects.
+        Convert a list of PatternOutput objects into a list of Story objects
+        by calling generate_stories_from_pattern on each.
         """
         all_stories = []
         for p_out in pattern_outputs:
