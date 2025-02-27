@@ -12,7 +12,7 @@
 
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional, List, Union, Tuple
+from typing import Dict, Optional, List, Union, Tuple, Any
 
 def calculate_metric_gva(
     actual_value: float, 
@@ -54,6 +54,10 @@ def calculate_metric_gva(
     >>> calculate_metric_gva(100, 0, allow_negative_target=True)
     {'abs_diff': 100.0, 'pct_diff': inf}
     """
+    # Input validation
+    if not isinstance(actual_value, (int, float)) or not isinstance(target_value, (int, float)):
+        raise ValueError("Both actual_value and target_value must be numeric")
+    
     abs_diff = actual_value - target_value
 
     # When target is not valid for percentage calculations:
@@ -115,9 +119,16 @@ def calculate_historical_gva(
     if date_col not in df_target.columns or value_col not in df_target.columns:
         raise ValueError(f"df_target must contain columns '{date_col}' and '{value_col}'")
 
+    # Convert date columns to datetime for proper joining
+    df_actual_copy = df_actual.copy()
+    df_target_copy = df_target.copy()
+    
+    df_actual_copy[date_col] = pd.to_datetime(df_actual_copy[date_col])
+    df_target_copy[date_col] = pd.to_datetime(df_target_copy[date_col])
+
     merged = pd.merge(
-        df_actual[[date_col, value_col]],
-        df_target[[date_col, value_col]],
+        df_actual_copy[[date_col, value_col]],
+        df_target_copy[[date_col, value_col]],
         on=date_col,
         how="left",
         suffixes=("_actual", "_target")
@@ -185,6 +196,10 @@ def classify_metric_status(
         on_track if actual_value <= target_value * (1 + threshold_ratio)
         (i.e. less deviation in the negative direction).
     """
+    # Input validation
+    if not isinstance(actual_value, (int, float)) or pd.isna(actual_value):
+        return status_if_no_target
+        
     if target_value is None or np.isnan(target_value):
         return status_if_no_target
 
@@ -225,11 +240,16 @@ def detect_status_changes(
           - 'prev_status': the previous row's status
           - 'status_flip': boolean flag indicating a status change.
     """
+    # Input validation
+    if status_col not in df.columns:
+        raise ValueError(f"Column '{status_col}' not found in DataFrame")
+    
     out_df = df.copy()
     
     if sort_by_date:
         if sort_by_date not in out_df.columns:
             raise ValueError(f"Column '{sort_by_date}' not found in DataFrame")
+        out_df[sort_by_date] = pd.to_datetime(out_df[sort_by_date])
         out_df.sort_values(sort_by_date, inplace=True)
     
     out_df["prev_status"] = out_df[status_col].shift(1)
@@ -270,6 +290,13 @@ def track_status_durations(
         raise ValueError(f"Column '{status_col}' not found in DataFrame")
     if date_col and date_col not in df.columns:
         raise ValueError(f"Column '{date_col}' not found in DataFrame")
+    
+    # Handle empty dataframe
+    if df.empty:
+        cols = ["status", "start_index", "end_index", "run_length"]
+        if date_col:
+            cols.extend(["start_date", "end_date", "duration_days"])
+        return pd.DataFrame(columns=cols)
 
     # Ensure a clean, zero-indexed DataFrame
     df_clean = df.reset_index(drop=True).copy()
@@ -320,6 +347,10 @@ def monitor_threshold_proximity(
     bool
         True if |val - target|/|target| <= margin; False otherwise.
     """
+    # Input validation
+    if not isinstance(val, (int, float)) or pd.isna(val):
+        return False
+        
     if target is None or np.isnan(target):
         return False
         
@@ -365,7 +396,14 @@ def calculate_required_growth(
         rate = (target_value / current_value)^(1/periods_left) - 1.
     When negative values are allowed, the function attempts a ratio-based approach with absolute values.
     """
+    # Input validation
     if periods_left <= 0:
+        return None
+        
+    if not isinstance(current_value, (int, float)) or pd.isna(current_value):
+        return None
+        
+    if not isinstance(target_value, (int, float)) or pd.isna(target_value):
         return None
 
     # Standard domain checks for positive values
@@ -386,3 +424,120 @@ def calculate_required_growth(
 
     rate = ratio ** (1.0 / periods_left) - 1.0
     return rate
+
+
+def classify_growth_trend(
+    growth_rates: List[float],
+    stability_threshold: float = 0.01,
+    acceleration_threshold: float = 0.02
+) -> str:
+    """
+    Classify the growth pattern as stable, accelerating, or decelerating.
+    
+    Parameters
+    ----------
+    growth_rates : List[float]
+        List of sequential growth rates
+    stability_threshold : float, default=0.01
+        Maximum deviation for "stable" classification (1%)
+    acceleration_threshold : float, default=0.02
+        Minimum change for "accelerating" or "decelerating" (2%)
+        
+    Returns
+    -------
+    str
+        Classification: "stable", "accelerating", "decelerating", or "volatile"
+    """
+    # Handle empty or too short lists
+    if not growth_rates or len(growth_rates) < 2:
+        return "insufficient_data"
+    
+    # Calculate changes between consecutive growth rates
+    changes = [growth_rates[i] - growth_rates[i-1] for i in range(1, len(growth_rates))]
+    
+    # Check if all changes are small (stable)
+    if all(abs(change) <= stability_threshold for change in changes):
+        return "stable"
+    
+    # Check if all significant changes are positive (accelerating)
+    if all(change >= -stability_threshold for change in changes) and any(change >= acceleration_threshold for change in changes):
+        return "accelerating"
+    
+    # Check if all significant changes are negative (decelerating)
+    if all(change <= stability_threshold for change in changes) and any(change <= -acceleration_threshold for change in changes):
+        return "decelerating"
+    
+    # Otherwise, pattern is volatile
+    return "volatile"
+
+
+def calculate_moving_target(
+    current_value: float,
+    final_target: float,
+    periods_total: int,
+    periods_elapsed: int,
+    smoothing_method: str = "linear"
+) -> float:
+    """
+    Calculate interim targets along a trajectory from current value to final target.
+    
+    Parameters
+    ----------
+    current_value : float
+        Starting value
+    final_target : float
+        Final target value to reach
+    periods_total : int
+        Total number of periods to reach target
+    periods_elapsed : int
+        Number of periods already elapsed
+    smoothing_method : str, default="linear"
+        Method for calculating interim targets:
+        - "linear": Equal increments each period
+        - "front_loaded": Larger changes earlier
+        - "back_loaded": Larger changes later
+        
+    Returns
+    -------
+    float
+        Target value for the current period
+    """
+    # Input validation
+    if periods_total <= 0:
+        raise ValueError("periods_total must be positive")
+    if periods_elapsed < 0 or periods_elapsed >= periods_total:
+        raise ValueError("periods_elapsed must be between 0 and periods_total-1")
+    
+    # Calculate total change needed
+    total_change = final_target - current_value
+    
+    # Calculate periods remaining
+    periods_remaining = periods_total - periods_elapsed
+    
+    if smoothing_method == "linear":
+        # Linear: equal changes each period
+        change_per_period = total_change / periods_total
+        interim_target = current_value + (change_per_period * periods_elapsed)
+    
+    elif smoothing_method == "front_loaded":
+        # Front-loaded: changes decrease over time
+        # Use a simple exponential decay formula
+        if periods_elapsed == 0:
+            interim_target = current_value
+        else:
+            progress = 1 - (0.8 ** periods_elapsed)  # Adjust 0.8 to control front-loading
+            interim_target = current_value + (total_change * progress)
+    
+    elif smoothing_method == "back_loaded":
+        # Back-loaded: changes increase over time
+        # Use a simple exponential growth formula
+        if periods_elapsed == 0:
+            interim_target = current_value
+        else:
+            progress = (periods_elapsed / periods_total) ** 2  # Square to back-load
+            interim_target = current_value + (total_change * progress)
+    
+    else:
+        raise ValueError(f"Unknown smoothing_method: {smoothing_method}")
+    
+    return interim_target

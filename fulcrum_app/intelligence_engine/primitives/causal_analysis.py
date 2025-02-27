@@ -7,44 +7,40 @@
 # Dependencies:
 #   - pandas as pd
 #   - numpy as np
-#   - dowhy (if needed)
+#   - dowhy (optional)
 # =============================================================================
 
 import numpy as np
 import pandas as pd
+from typing import Dict, Any, Optional, List, Union
 
-# -----------------------------------------------------------------------------
-# Helper Functions
-# -----------------------------------------------------------------------------
-
-# (None at this time)
-
-# -----------------------------------------------------------------------------
-# Main Analysis Functions
-# -----------------------------------------------------------------------------
-
-def dowhy_influence_analysis(df, treatment_vars, outcome_var, common_causes):
+def dowhy_influence_analysis(
+    df: pd.DataFrame, 
+    treatment_vars: List[str], 
+    outcome_var: str, 
+    common_causes: List[str]
+) -> Dict[str, Any]:
     """
-    Purpose: Perform causal effect estimation using DoWhy or a similar library.
-
-    Implementation Details:
-    1. Takes a dataset and set of treatment variables plus outcome.
-    2. Builds a causal model (a simple DAG) using DoWhy.
-    3. Estimates the causal effect of the treatment on the outcome.
-    4. Returns estimated effect with confidence intervals.
+    Perform causal effect estimation using DoWhy or a similar library.
 
     Parameters
     ----------
     df : pd.DataFrame
-    treatment_vars : list
+        DataFrame containing treatment, outcome and covariate data
+    treatment_vars : List[str]
+        Column names of treatment variables
     outcome_var : str
-    common_causes : list
-        Covariates to include as common causes.
+        Column name of outcome variable
+    common_causes : List[str]
+        Column names of common causes (covariates)
 
     Returns
     -------
-    dict
-        e.g. {'ate': float, 'confidence_intervals': (low, high)}
+    Dict[str, Any]
+        Dictionary containing:
+        - 'ate': Average treatment effect
+        - 'confidence_intervals': (low, high) tuple
+        - 'error': Error message if DoWhy is not installed
     """
     try:
         import dowhy
@@ -64,7 +60,12 @@ def dowhy_influence_analysis(df, treatment_vars, outcome_var, common_causes):
             'confidence_intervals': causal_estimate.get_confidence_intervals()
         }
     except ImportError:
-        # If dowhy is not installed, fallback or raise an error
+        # If dowhy is not installed, return error message
         return {
             'error': "DoWhy not installed. Please install 'dowhy' to use this function."
+        }
+    except Exception as e:
+        # Handle other potential errors
+        return {
+            'error': f"Error in causal analysis: {str(e)}"
         }

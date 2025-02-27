@@ -13,7 +13,7 @@
 
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Tuple
 from scipy.stats import skew, kurtosis, median_abs_deviation
 
 def calculate_descriptive_stats(
@@ -113,16 +113,25 @@ def calculate_descriptive_stats(
     variance_val = std_val**2
 
     # Shape statistics
-    skew_val = float(skew(arr, bias=False))
-    kurt_val = float(kurtosis(arr, bias=False))
+    try:
+        skew_val = float(skew(arr, bias=False))
+        kurt_val = float(kurtosis(arr, bias=False))
+    except Exception:
+        # Handle cases where skew/kurtosis might fail (e.g., constant array)
+        skew_val = 0.0
+        kurt_val = -3.0  # Excess kurtosis of normal distribution is 0, kurtosis is 3
 
     # Interquartile range
-    q25 = np.percentile(arr, 25)
-    q75 = np.percentile(arr, 75)
-    iqr_val = q75 - q25
+    q1 = float(np.percentile(arr, 25))
+    q3 = float(np.percentile(arr, 75))
+    iqr_val = q3 - q1
 
     # Median absolute deviation
-    mad_val = float(median_abs_deviation(arr, scale='normal'))
+    try:
+        mad_val = float(median_abs_deviation(arr, scale='normal'))
+    except Exception:
+        # Handle cases where MAD might fail (e.g., constant array)
+        mad_val = 0.0
     
     # Coefficient of variation
     cv_val = None if mean_val == 0 else std_val / abs(mean_val)
@@ -134,8 +143,8 @@ def calculate_descriptive_stats(
         outlier_count_z = int((z_scores > zscore_threshold).sum())
 
     # IQR-based outlier detection
-    lower_fence = q25 - iqr_multiplier * iqr_val
-    upper_fence = q75 + iqr_multiplier * iqr_val
+    lower_fence = q1 - iqr_multiplier * iqr_val
+    upper_fence = q3 + iqr_multiplier * iqr_val
     outlier_count_iqr = int(((arr < lower_fence) | (arr > upper_fence)).sum())
 
     # Mode calculation
@@ -176,7 +185,8 @@ def calculate_rolling_statistics(
     value_col: str = "value",
     date_col: str = "date",
     window_size: int = 7,
-    min_periods: Optional[int] = None
+    min_periods: Optional[int] = None,
+    center: bool = False
 ) -> pd.DataFrame:
     """
     Calculate rolling statistics over a time window.
@@ -194,6 +204,8 @@ def calculate_rolling_statistics(
     min_periods : Optional[int], default=None
         Minimum number of observations required to calculate statistics.
         If None, defaults to window_size.
+    center : bool, default=False
+        Whether to center the window.
         
     Returns
     -------
@@ -218,8 +230,12 @@ def calculate_rolling_statistics(
     # Work with a copy of the DataFrame
     result_df = df.copy()
     
+    # Ensure value_col is numeric
+    if not pd.api.types.is_numeric_dtype(result_df[value_col]):
+        result_df[value_col] = pd.to_numeric(result_df[value_col], errors='coerce')
+    
     # Sort by date
-    result_df[date_col] = pd.to_datetime(result_df[date_col])
+    result_df[date_col] = pd.to_datetime(result_df[date_col], errors='coerce')
     result_df.sort_values(by=date_col, inplace=True)
     
     # Set min_periods if not provided
@@ -227,7 +243,7 @@ def calculate_rolling_statistics(
         min_periods = window_size
     
     # Calculate rolling statistics
-    rolling = result_df[value_col].rolling(window=window_size, min_periods=min_periods)
+    rolling = result_df[value_col].rolling(window=window_size, min_periods=min_periods, center=center)
     
     result_df['rolling_mean'] = rolling.mean()
     result_df['rolling_std'] = rolling.std()
@@ -275,6 +291,11 @@ def detect_outliers(
     
     >>> detect_outliers([1, 2, 3, 100], method="iqr", threshold=1.5)
     array([False, False, False,  True])
+    
+    Raises
+    ------
+    ValueError
+        If method is not one of "zscore", "iqr", or "mad"
     """
     # Handle different input types
     if isinstance(data, pd.DataFrame):
@@ -310,9 +331,123 @@ def detect_outliers(
         
     elif method == "mad":
         median_val = np.median(values)
+        # Calculate MAD with normalization for normal distribution
         mad = np.median(np.abs(values - median_val))
-        mad = mad * 1.4826  # Scale factor for normal distribution
-        return np.abs(values - median_val) / mad > threshold
+        mad_normalized = mad * 1.4826  # Scale factor for normal distribution
+        if mad_normalized < 1e-12:  # Avoid division by zero
+            return np.zeros(len(values), dtype=bool)
+        return np.abs(values - median_val) / mad_normalized > threshold
         
     else:
         raise ValueError(f"Unknown method: {method}. Must be one of 'zscore', 'iqr', or 'mad'.")
+
+def summarize_categorical_data(
+    data: Union[pd.DataFrame, pd.Series],
+    column: Optional[str] = None,
+    top_n: int = 10,
+    include_na: bool = True
+) -> Dict[str, Any]:
+    """
+    Summarize categorical data with frequency counts, proportions, and uniqueness information.
+    
+    Parameters
+    ----------
+    data : Union[pd.DataFrame, pd.Series]
+        Data to analyze. If DataFrame, must specify column.
+    column : Optional[str], default=None
+        Column name to analyze if data is a DataFrame.
+    top_n : int, default=10
+        Number of top categories to include in the detailed breakdown.
+    include_na : bool, default=True
+        Whether to include NA values in the summary.
+    
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - 'count': Total number of observations
+        - 'unique_count': Number of unique categories
+        - 'na_count': Number of NA values
+        - 'na_percent': Percentage of NA values
+        - 'mode': Most frequent category
+        - 'mode_count': Count of most frequent category
+        - 'mode_percent': Percentage of most frequent category
+        - 'entropy': Shannon entropy of the distribution (higher = more dispersed)
+        - 'categories': List of top_n categories with their counts and percentages
+    
+    Examples
+    --------
+    >>> df = pd.DataFrame({'color': ['red', 'blue', 'red', 'green', None, 'blue']})
+    >>> summarize_categorical_data(df, 'color')
+    {'count': 6, 'unique_count': 3, 'na_count': 1, ...}
+    """
+    # Handle inputs
+    if isinstance(data, pd.DataFrame):
+        if column is None:
+            raise ValueError("Must specify 'column' when input is a DataFrame")
+        series = data[column]
+    else:
+        series = data
+    
+    # Basic counts
+    total_count = len(series)
+    na_count = series.isna().sum()
+    valid_count = total_count - na_count
+    
+    # Calculate stats only on non-NA values if specified
+    if not include_na:
+        series = series.dropna()
+    
+    # Get value counts
+    value_counts = series.value_counts(dropna=False)
+    
+    # Unique categories
+    if include_na:
+        unique_count = len(value_counts)
+    else:
+        unique_count = len(value_counts) - (1 if na_count > 0 else 0)
+    
+    # Most frequent category
+    if not value_counts.empty:
+        mode_value = value_counts.index[0]
+        mode_count = value_counts.iloc[0]
+        mode_percent = (mode_count / total_count) * 100 if total_count > 0 else 0
+    else:
+        mode_value = None
+        mode_count = 0
+        mode_percent = 0
+    
+    # Calculate Shannon entropy (measure of distribution)
+    if valid_count > 0:
+        probs = value_counts.div(value_counts.sum())
+        entropy = -np.sum(probs * np.log2(probs))
+    else:
+        entropy = 0
+    
+    # Build categories list
+    categories = []
+    for i, (cat, count) in enumerate(value_counts.items()):
+        if i >= top_n:
+            break
+        
+        percent = (count / total_count) * 100 if total_count > 0 else 0
+        categories.append({
+            'category': cat if not pd.isna(cat) else 'NA',
+            'count': int(count),
+            'percent': float(percent)
+        })
+    
+    # Compile results
+    result = {
+        'count': total_count,
+        'unique_count': unique_count,
+        'na_count': na_count,
+        'na_percent': (na_count / total_count) * 100 if total_count > 0 else 0,
+        'mode': str(mode_value) if not pd.isna(mode_value) else 'NA',
+        'mode_count': int(mode_count),
+        'mode_percent': float(mode_percent),
+        'entropy': float(entropy),
+        'categories': categories
+    }
+    
+    return result
