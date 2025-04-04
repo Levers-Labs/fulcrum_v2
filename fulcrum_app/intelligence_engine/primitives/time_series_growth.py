@@ -26,6 +26,7 @@ from typing import Optional, Union, List, Dict, Tuple, Callable, Any
 def _validate_date_sorted(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     """
     Ensure DataFrame is sorted by date and dates are datetime objects.
+    Returns a new sorted DataFrame without modifying the original.
     
     Parameters
     ----------
@@ -50,6 +51,62 @@ def _validate_date_sorted(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     result = df.copy()
     result[date_col] = pd.to_datetime(result[date_col])
     return result.sort_values(by=date_col)
+
+
+def _safe_pct_change(current: float, previous: float) -> Optional[float]:
+    """
+    Calculate percentage change safely handling zero values.
+    
+    Parameters
+    ----------
+    current : float
+        Current value
+    previous : float
+        Previous value
+        
+    Returns
+    -------
+    Optional[float]
+        Percentage change or None if previous is zero
+    """
+    if previous == 0 or pd.isna(previous):
+        return None
+    return ((current - previous) / abs(previous)) * 100.0
+
+
+def _convert_grain_to_freq(grain: str) -> str:
+    """
+    Convert a textual grain like 'day','daily','week','weekly','month','monthly'
+    into a pandas frequency alias.
+    
+    Parameters
+    ----------
+    grain : str
+        Time grain description
+        
+    Returns
+    -------
+    str
+        Pandas frequency alias
+        
+    Raises
+    ------
+    ValueError
+        If the grain is not supported
+    """
+    g = grain.lower()
+    if g in ["day", "daily", "d"]:
+        return "D"
+    elif g in ["week", "weekly", "w"]:
+        return "W-MON"  # Start week on Monday
+    elif g in ["month", "monthly", "m"]:
+        return "MS"  # Month start
+    elif g in ["quarter", "quarterly", "q"]:
+        return "QS"  # Quarter start
+    elif g in ["year", "yearly", "annual", "y"]:
+        return "YS"  # Year start
+    else:
+        raise ValueError(f"Unsupported grain '{grain}'. Use day, week, month, quarter, or year.")
 
 # -----------------------------------------------------------------------------
 # Main Analysis Functions
@@ -125,18 +182,21 @@ def calculate_pop_growth(
     
     # Calculate growth rate
     if annualize and date_col in df_sorted.columns:
-        # Annualized growth rate based on days between observations
+        # More efficient and vectorized annualized growth calculation
         df_sorted['days_diff'] = (df_sorted[date_col] - df_sorted[date_col].shift(periods)).dt.days
         
-        # Calculate annualized growth 
-        df_sorted[growth_col_name] = np.where(
-            (df_sorted['prev_value'] > 0) & (df_sorted['days_diff'] > 0),
-            (np.power(df_sorted[value_col] / df_sorted['prev_value'], 365 / df_sorted['days_diff']) - 1) * 100,
-            np.nan
-        )
+        # Use numpy's power function for vectorized calculation
+        mask = (df_sorted['prev_value'] > 0) & (df_sorted['days_diff'] > 0)
+        df_sorted[growth_col_name] = np.nan
+        
+        if mask.any():
+            ratio = df_sorted.loc[mask, value_col] / df_sorted.loc[mask, 'prev_value']
+            exponent = 365.0 / df_sorted.loc[mask, 'days_diff']
+            df_sorted.loc[mask, growth_col_name] = (np.power(ratio, exponent) - 1) * 100
+        
         df_sorted.drop('days_diff', axis=1, inplace=True)
     else:
-        # Standard period-over-period growth rate
+        # Standard period-over-period growth rate - vectorized calculation
         df_sorted[growth_col_name] = np.where(
             df_sorted['prev_value'] != 0,
             ((df_sorted[value_col] - df_sorted['prev_value']) / df_sorted['prev_value']) * 100,
