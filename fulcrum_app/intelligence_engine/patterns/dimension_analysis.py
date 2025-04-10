@@ -1,682 +1,361 @@
 """
 DimensionAnalysis Pattern
--------------------------
 
 This Pattern performs slice-level analysis for a given metric and dimension at a specified
 time grain (day, week, or month). It compares the current period to the immediately prior
 period, calculates share of total metric volume, performance deltas, ranks slices, identifies
 top and bottom slices, and more.
 
-INPUT FORMAT
-============
+Inputs:
+    - ledger_df (pd.DataFrame): Must contain columns:
+        metric_id, time_grain, date, dimension, slice_value, metric_value
+    - metric_id (str): The metric to analyze (e.g., "revenue").
+    - dimension_name (str): Which dimension to analyze (e.g., "region").
+    - grain (str): One of "day", "week", or "month".
+    - analysis_date (datetime or str): Focal date. For 'day', uses that day;
+      for 'week', uses that calendar week (Monday-Sunday); for 'month', uses that calendar month.
 
-We expect a pandas DataFrame called `ledger_df` with (at least) the following columns:
+Outputs a dictionary with keys:
+  "schemaVersion"
+  "patternName"
+  "metricId"
+  "grain"
+  "analysisDate"
+  "evaluationTime"
+  "dimensionName"
+  "slices"
+  "topSlicesByPerformance"
+  "bottomSlicesByPerformance"
+  "largestSlice"
+  "smallestSlice"
+  "newStrongestSlice"
+  "newWeakestSlice"
+  "comparisonHighlights"
+  "historicalSliceRankings"
 
-    - metric_id: str           (e.g., "revenue", "active_users")
-    - time_grain: str          ("day", "week", or "month")
-    - date: datetime or string (the date associated with each record; for weekly or monthly
-                                grains, this might be the start or end of the period)
-    - dimension: str           (the dimension name, e.g., "region" or "product_category")
-    - slice_value: str         (a particular slice of that dimension, e.g., "North America")
-    - metric_value: float      (the metric value for that slice in that period)
+Relies on dimension analysis primitives from:
+    intelligence_engine.primitives.dimensional_analysis
 
-We also accept:
-    - metric_id (str): the metric we want to analyze (e.g., "revenue")
-    - dimension_name (str): which dimension we're analyzing (e.g., "region")
-    - grain (str): "day", "week", or "month"
-    - analysis_date (str or datetime): the focal date for the analysis. For a "day" grain,
-      we look at that particular day. For "week" grain, we look at that calendar week.
-      For "month" grain, we look at that calendar month.
-
-OUTPUT
-======
-
-A dictionary conforming to the structure below (pseudo-JSON). It includes:
-
-{
-  "schemaVersion": "1.0.0",
-  "patternName": "DimensionAnalysis",
-  "metricId": "revenue",
-  "grain": "day" | "week" | "month",
-
-  "analysisDate": "2025-02-05",
-  "evaluationTime": "2025-02-05 03:15:00",
-
-  "dimensionName": "region",
-
-  // -- Detailed slice-level data --
-  "slices": [
-    {
-      // The dimension slice (e.g. "North America")
-      "sliceValue": "North America",
-
-      // Current & prior average metric values for this slice
-      "currentValue": 123.4,
-      "priorValue": 115.0,
-      "absoluteChange": 8.4,             // (123.4 - 115.0)
-      "relativeChangePercent": 7.3,      // (8.4 / 115.0) * 100
-
-      // Current & prior share of the total metric volume
-      "currentShareOfVolumePercent": 25.0,
-      "priorShareOfVolumePercent": 22.0,
-      "shareOfVolumeChangePercent": 3.0, // (3 / 22 = ~13.6% but we store it in "points" or direct difference—up to you
-
-      // Marginal impact on the overall metric. 
-      // E.g., how many absolute points of the total metric’s delta are attributable to changes in this slice?
-      "absoluteMarginalImpact": 5.0,
-      "relativeMarginalImpactPercent": 4.2,
-
-      // For comparing to the average across all other slices
-      "avgOtherSlicesValue": 107.3,
-      "absoluteDiffFromAvg": 16.1,               // 123.4 - 107.3
-      "absoluteDiffPercentFromAvg": 15.0,         // (16.1 / 107.3) * 100
-
-      // Streak / ranking info
-      "consecutiveAboveAvgStreak": 3,
-      "rankByPerformance": 1,
-      "rankByShare": 2
-    }
-  ],
-
-  // -- Top slices by performance --
-  "topSlicesByPerformance": [
-    {
-      "sliceValue": "North America",
-      "metricValue": 123.4,
-
-      // The average across all OTHER slices
-      "avgOtherSlicesValue": 98.3,
-      // Absolute difference from that average
-      "absoluteDiffFromAvg": 25.1,
-      // Percentage difference from that average
-      "absoluteDiffPercentFromAvg": 25.52,
-      "performanceRank": 1
-    }
-  ],
-
-  // -- Bottom slices by performance --
-  "bottomSlicesByPerformance": [
-    {
-      "sliceValue": "APAC",
-      "metricValue": 70.0,
-      "avgOtherSlicesValue": 99.5,
-      "absoluteDiffFromAvg": -29.5,
-      "absoluteDiffPercentFromAvg": -29.65,
-      "performanceRank": -1
-    }
-  ],
-
-  // -- Largest & smallest slices by volume share (if relevant) --
-  "largestSlice": {
-    "sliceValue": "North America",
-    "currentShareOfVolumePercent": 25.0,
-    "previousLargestSliceValue": "Europe",
-    "previousLargestSharePercent": 21.0
-  },
-  "smallestSlice": {
-    "sliceValue": "APAC",
-    "currentShareOfVolumePercent": 15.0,
-    "previousSmallestSliceValue": "Latin America",
-    "previousSmallestSharePercent": 16.0,
-  },
-
-  // -- Newly strongest / weakest slice (by performance) --
-  "newStrongestSlice": {
-    "sliceValue": "North America",
-    "previousStrongestSliceValue": "Europe",
-
-    // Current vs. prior average metric value for this slice
-    "currentValue": 123.4,
-    "priorValue": 115.0,
-
-    "absoluteDelta": 8.4,
-    "relativeDeltaPercent": 7.3
-  },
-  "newWeakestSlice": {
-    "sliceValue": "APAC",
-    "previousWeakestSliceValue": "Latin America",
-
-    "currentValue": 70.0,
-    "priorValue": 65.0,
-
-    "absoluteDelta": 5.0,
-    "relativeDeltaPercent": 7.69
-  },
-
-  // -- Slice-to-slice comparison highlights --
-  "comparisonHighlights": [
-    {
-      "sliceA": "North America",
-      "currentValueA": 123.4,
-      "priorValueA": 115.0,
-
-      "sliceB": "Europe",
-      "currentValueB": 95.0,
-      "priorValueB": 100.0,
-
-      "performanceGapPercent": 29.89,   // e.g. (123.4 - 95) / 95 * 100
-      "gapChangePercent": 4.5          // how the gap grew or shrank vs. prior period
-    }
-  ],
-
-  // -- Historical slice rank data: top 5 slices each period for the last 8 weeks, for example --
-  "historicalSliceRankings": {
-    "periodsAnalyzed": 8,
-    "periodRankings": [
-      {
-        "startDate": "2024-12-10",
-        "endDate": "2024-12-16",
-        "top5SlicesByPerformance": [
-          { "sliceValue": "North America", "metricValue": 110.0 },
-          { "sliceValue": "Latin America", "metricValue": 85.0 }
-          // ...
-        ]
-      },
-      {
-        "startDate": "2024-12-17",
-        "endDate": "2024-12-23",
-        "top5SlicesByPerformance": [
-          { "sliceValue": "North America", "metricValue": 115.0 },
-          { "sliceValue": "Europe", "metricValue": 100.0 }
-          // ...
-        ]
-      }
-      // ...
-    ]
-  }
-}
-
-We rely on existing Dimension-related primitives in `DimensionAnalysis.py` (e.g.,
-`calculate_slice_metrics`, `compute_slice_shares`, etc.). We do NOT rewrite or duplicate
-those primitives here; we simply reference them. If you need changes to those primitives,
-please call it out.
-
-Author: Fulcrum Intelligence Engineering
-Date: 2025-02-05
-Version: 1.0.0
+Author: Fulcrum Intelligence
 """
 
 import pandas as pd
 import numpy as np
 import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Union
 
-# We reference the dimension-related primitives here. We assume they exist in:
-# from intelligence_engine.primitives.DimensionAnalysis import (
-#     calculate_slice_metrics,
-#     compute_slice_shares,
-#     rank_metric_slices,
-#     compare_dimension_slices_over_time,
-#     analyze_composition_changes,
-#     calculate_concentration_index,
-#     ...
-# )
-#
-# For brevity, we won't rewrite them in this file.
+# Example imports from your DimensionAnalysis primitives:
+from intelligence_engine.primitives.dimensional_analysis import (
+    compare_dimension_slices_over_time,
+    compute_slice_shares,
+    rank_metric_slices,
+    calculate_slice_metrics  # if needed
+    # ... other functions as needed
+)
 
-def _get_period_range_for_grain(analysis_date, grain='day'):
+
+def _get_period_range_for_grain(analysis_date: Union[str, pd.Timestamp], grain: str) -> (pd.Timestamp, pd.Timestamp):
     """
-    Given an analysis_date and a grain ('day','week','month'), return
-    a (start_date, end_date) range for that period.
-
-    This is a helper. E.g.:
-      - if grain='day', we return (analysis_date, analysis_date).
-      - if grain='week', we find the Monday-Sunday range containing analysis_date.
-      - if grain='month', we find the 1st..end-of-month range containing analysis_date.
+    Convert an analysis_date plus a grain into (start_date, end_date).
+    For grain='day', returns (analysis_date, analysis_date).
+    For grain='week', uses Monday-Sunday. For grain='month', uses full calendar month.
     """
     dt = pd.to_datetime(analysis_date)
     if grain == 'day':
         start = dt.normalize()
         end = start
     elif grain == 'week':
-        # We'll assume Monday-based weeks.
-        # ISO weekday: Monday=1, Sunday=7
+        # Monday-based
         day_of_week = dt.isoweekday()  # Monday=1
-        # start = dt - pd.Timedelta(days=(day_of_week-1))
         start = (dt - pd.Timedelta(days=(day_of_week - 1))).normalize()
         end = start + pd.Timedelta(days=6)
     elif grain == 'month':
         start = dt.replace(day=1).normalize()
-        # next month:
-        next_month = (start + pd.offsets.MonthBegin(1))
-        end = (next_month - pd.Timedelta(days=1)).normalize()
+        next_month_start = start + pd.offsets.MonthBegin(1)
+        end = (next_month_start - pd.Timedelta(days=1)).normalize()
     else:
-        raise ValueError(f"Unsupported grain '{grain}'")
-    return (start, end)
+        raise ValueError(f"Unsupported grain '{grain}'.")
+    return start, end
 
-def _get_prior_period_range(start_date, end_date, grain='day'):
+
+def _get_prior_period_range(start_date: pd.Timestamp, end_date: pd.Timestamp, grain: str) -> (pd.Timestamp, pd.Timestamp):
     """
-    Given the (start_date, end_date) for the current period,
-    return the (start_date, end_date) for the immediately prior period
-    with the same length. For example:
-      - if the current period is a single day, prior period is the previous day.
-      - if the current period is a week, prior period is the previous 7 days, etc.
-      - if the current period is a month, prior is the previous calendar month.
+    Given current period start/end, return the immediately prior period of equal length.
+    For 'day', subtract 1 day; for 'week', subtract 7 days; for 'month', subtract 1 month.
     """
     if grain == 'day':
-        # Prior day
         prior_start = start_date - pd.Timedelta(days=1)
         prior_end = end_date - pd.Timedelta(days=1)
     elif grain == 'week':
-        # shift by 7 days
         prior_start = start_date - pd.Timedelta(days=7)
         prior_end = end_date - pd.Timedelta(days=7)
     elif grain == 'month':
-        # If start_date is the 1st, end_date is the last day. Let's subtract 1 month.
-        # We'll do a naive approach: subtract a MonthBegin from start_date, etc.
-        prior_month_start = start_date - pd.offsets.MonthBegin(1)
-        prior_month_end = prior_month_start + pd.offsets.MonthEnd(0)
-        prior_start = prior_month_start
-        prior_end = prior_month_end
+        prior_start = start_date - pd.offsets.MonthBegin(1)
+        prior_end = prior_start + pd.offsets.MonthEnd(0)
     else:
-        raise ValueError(f"Unsupported grain '{grain}' in prior period calculation.")
-    return (prior_start, prior_end)
+        raise ValueError(f"Unsupported grain '{grain}' for prior-period calculation.")
+    return prior_start, prior_end
 
-def _compute_current_vs_prior(ledger_df, metric_id, dimension_name, grain, analysis_date):
+
+def _difference_from_average(df: pd.DataFrame, current_col: str = "val_t1") -> pd.DataFrame:
     """
-    Filter ledger_df to the current period and the prior period for the given metric/dimension,
-    then compute per-slice sums for both periods.
-
-    Returns:
-        current_df:  DataFrame of shape [n_slices, 2], columns=[slice_value, current_value]
-        prior_df:    DataFrame of shape [n_slices, 2], columns=[slice_value, prior_value]
-        merged_df:   DataFrame with columns [slice_value, current_value, prior_value],
-                     with 0 filled where slices missing in one period.
+    Add columns: 'avgOtherSlicesValue', 'absoluteDiffFromAvg', 'absoluteDiffPercentFromAvg'.
+    This computes the difference of each slice's current_col from the mean
+    of all other slices in that same DataFrame.
     """
-    # 1) Get current period range
-    (start_date, end_date) = _get_period_range_for_grain(analysis_date, grain)
-    # 2) Get prior period range
-    (pstart, pend) = _get_prior_period_range(start_date, end_date, grain)
+    if df.empty:
+        df["avgOtherSlicesValue"] = np.nan
+        df["absoluteDiffFromAvg"] = np.nan
+        df["absoluteDiffPercentFromAvg"] = np.nan
+        return df
 
-    # Filter ledger for the metric, dimension_name
-    dff = ledger_df[
-        (ledger_df['metric_id'] == metric_id) &
-        (ledger_df['time_grain'] == grain) &
-        (ledger_df['dimension'] == dimension_name)
-    ].copy()
-
-    # ensure date col is datetime
-    dff['date'] = pd.to_datetime(dff['date'])
-
-    # Current period sub-DF
-    curr_mask = (dff['date'] >= start_date) & (dff['date'] <= end_date)
-    curr_df = dff[curr_mask]
-    # Prior period sub-DF
-    prior_mask = (dff['date'] >= pstart) & (dff['date'] <= pend)
-    pr_df = dff[prior_mask]
-
-    # group by slice_value => sum
-    current_agg = curr_df.groupby('slice_value')['metric_value'].sum().reset_index(name='current_value')
-    prior_agg   = pr_df.groupby('slice_value')['metric_value'].sum().reset_index(name='prior_value')
-
-    # Merge to get all slices
-    merged = pd.merge(
-        current_agg, prior_agg,
-        on='slice_value', how='outer'
-    ).fillna(0)
-
-    return current_agg, prior_agg, merged
-
-def _compute_slice_statistics(merged_df):
-    """
-    Given a DataFrame with columns [slice_value, current_value, prior_value],
-    compute absoluteChange, relativeChangePercent, shareOfVolume, difference from average, etc.
-
-    Returns an expanded DataFrame with the new fields:
-      [slice_value, current_value, prior_value,
-       absoluteChange, relativeChangePercent,
-       currentShareOfVolumePercent, priorShareOfVolumePercent, shareOfVolumeChangePercent,
-       absoluteMarginalImpact, relativeMarginalImpactPercent,
-       avgOtherSlicesValue, absoluteDiffFromAvg, absoluteDiffPercentFromAvg]
-
-    NOTE: We'll do sums for both periods, so "current_value" is the total sum
-    for that slice in the current period. Similarly for "prior_value".
-    """
-    dff = merged_df.copy()
-
-    # total current / total prior
-    total_current = dff['current_value'].sum()
-    total_prior   = dff['prior_value'].sum()
-    total_delta   = total_current - total_prior
-
-    # compute absolute & relative changes
-    dff['absoluteChange'] = dff['current_value'] - dff['prior_value']
-    def safe_rel(row):
-        if row['prior_value'] == 0:
-            return np.nan
-        return (row['absoluteChange'] / row['prior_value']) * 100
-    dff['relativeChangePercent'] = dff.apply(safe_rel, axis=1)
-
-    # share of volume
-    def safe_share(curr_val, total_val):
-        if total_val == 0:
-            return 0.0
-        return (curr_val / total_val) * 100.0
-
-    dff['currentShareOfVolumePercent'] = dff['current_value'].apply(lambda x: safe_share(x, total_current))
-    dff['priorShareOfVolumePercent']   = dff['prior_value'].apply(lambda x: safe_share(x, total_prior))
-    dff['shareOfVolumeChangePercent']  = dff['currentShareOfVolumePercent'] - dff['priorShareOfVolumePercent']
-
-    # marginal impact (absolute & relative)
-    def safe_marginal(slice_delta):
-        # how many points of total metric delta are from this slice
-        return slice_delta  # typically it's the slice_delta itself
-    dff['absoluteMarginalImpact'] = dff['absoluteChange'].apply(safe_marginal)
-    def safe_rel_marg(row):
-        if total_delta == 0:
-            return 0.0
-        return (row['absoluteChange'] / total_delta) * 100
-    dff['relativeMarginalImpactPercent'] = dff.apply(safe_rel_marg, axis=1)
-
-    # difference from average of other slices (current)
-    # for each slice s: sum_of_others = total_current - s.current_value
-    # num_others = len(dff) - 1
-    # if num_others <= 0 => skip
-    n_slices = len(dff)
-    def diff_from_avg(row):
-        if n_slices <= 1:
-            return (np.nan, np.nan)
-        sum_others = total_current - row['current_value']
-        avg_others = sum_others / (n_slices - 1)
-        abs_diff   = row['current_value'] - avg_others
-        if avg_others == 0:
-            pct_diff = np.nan
-        else:
-            pct_diff = (abs_diff / avg_others) * 100
-        return (avg_others, abs_diff, pct_diff)
-
-    dff['avgOtherSlicesValue'] = np.nan
-    dff['absoluteDiffFromAvg'] = np.nan
-    dff['absoluteDiffPercentFromAvg'] = np.nan
+    total = df[current_col].sum()
+    n_slices = len(df)
+    df["avgOtherSlicesValue"] = np.nan
+    df["absoluteDiffFromAvg"] = np.nan
+    df["absoluteDiffPercentFromAvg"] = np.nan
 
     for i in range(n_slices):
-        row = dff.iloc[i]
-        (avgo, absd, pctd) = diff_from_avg(row)
-        dff.at[i, 'avgOtherSlicesValue']           = avgo
-        dff.at[i, 'absoluteDiffFromAvg']           = absd
-        dff.at[i, 'absoluteDiffPercentFromAvg']    = pctd
+        row_val = df.iloc[i][current_col]
+        if n_slices > 1:
+            sum_others = total - row_val
+            avg_others = sum_others / (n_slices - 1)
+            abs_diff = row_val - avg_others
+            pct_diff = (abs_diff / avg_others) * 100 if avg_others != 0 else np.nan
+            df.at[df.index[i], "avgOtherSlicesValue"] = avg_others
+            df.at[df.index[i], "absoluteDiffFromAvg"] = abs_diff
+            df.at[df.index[i], "absoluteDiffPercentFromAvg"] = pct_diff
+        else:
+            df.at[df.index[i], "avgOtherSlicesValue"] = np.nan
+            df.at[df.index[i], "absoluteDiffFromAvg"] = np.nan
+            df.at[df.index[i], "absoluteDiffPercentFromAvg"] = np.nan
+    return df
 
-    return dff
 
-def _compute_ranks_and_streaks(expanded_df):
+def _build_slices_list(merged_df: pd.DataFrame) -> list:
     """
-    For each slice, compute:
-      - rankByPerformance (1=best, 2=second, ...)
-      - rankByShare
-      - consecutiveAboveAvgStreak => For simplicity, we’ll do a placeholder approach
-        or we could do a short historical lookback. 
-        We'll just set it to 0 or 1 if the slice is above the average in this period.
-
-    Returns the same DataFrame with new columns:
-      - rankByPerformance
-      - rankByShare
-      - consecutiveAboveAvgStreak
+    Convert rows in merged_df into the final 'slices' list format.
     """
-    dff = expanded_df.copy()
-    # rank by performance => sort descending by current_value
-    dff['rankByPerformance'] = dff['current_value'].rank(method='dense', ascending=False).astype(int)
-    # rank by share => sort descending by currentShareOfVolumePercent
-    dff['rankByShare']       = dff['currentShareOfVolumePercent'].rank(method='dense', ascending=False).astype(int)
-
-    # consecutiveAboveAvgStreak => placeholder: if current_value > avgOtherSlicesValue => set 1, else 0
-    # in real usage, you'd gather historical data and see how many consecutive periods it has been > average
-    dff['consecutiveAboveAvgStreak'] = dff.apply(
-        lambda row: 1 if row['current_value'] > row['avgOtherSlicesValue'] else 0,
-        axis=1
-    )
-
-    return dff
-
-def _compute_top_and_bottom_slices(dff, top_n=3):
-    """
-    Given the expanded DataFrame, pick the top slices by performance (current_value)
-    and the bottom slices. Return two arrays of dict with relevant data.
-    """
-    # sort by current_value descending
-    sorted_df = dff.sort_values(by='current_value', ascending=False).reset_index(drop=True)
-
-    # top slices
-    top_slices = []
-    top_n = min(top_n, len(sorted_df))
-    for i in range(top_n):
-        row = sorted_df.iloc[i]
-        top_slices.append({
-            "sliceValue": row['slice_value'],
-            "metricValue": row['current_value'],
-            "avgOtherSlicesValue": row['avgOtherSlicesValue'],
-            "absoluteDiffFromAvg": row['absoluteDiffFromAvg'],
-            "absoluteDiffPercentFromAvg": row['absoluteDiffPercentFromAvg'],
-            "performanceRank": row['rankByPerformance']
+    slices_list = []
+    for _, row in merged_df.iterrows():
+        slices_list.append({
+            "sliceValue": row["slice_col"],
+            "currentValue": row["val_t1"],
+            "priorValue": row["val_t0"],
+            "absoluteChange": row["abs_diff"],
+            "relativeChangePercent": row["pct_diff"],
+            "currentShareOfVolumePercent": row.get("share_pct_t1", None),
+            "priorShareOfVolumePercent": row.get("share_pct_t0", None),
+            "shareOfVolumeChangePercent": row.get("share_diff", None),
+            "absoluteMarginalImpact": row.get("abs_diff", None),  # same as absoluteChange
+            "relativeMarginalImpactPercent": None,  # can fill if needed
+            "avgOtherSlicesValue": row.get("avgOtherSlicesValue", None),
+            "absoluteDiffFromAvg": row.get("absoluteDiffFromAvg", None),
+            "absoluteDiffPercentFromAvg": row.get("absoluteDiffPercentFromAvg", None),
+            "consecutiveAboveAvgStreak": None,  # placeholder or your logic
+            "rankByPerformance": row.get("rank_performance", None),
+            "rankByShare": row.get("rank_share", None),
         })
+    return slices_list
 
-    # bottom slices => sort ascending
-    bottom_sorted_df = dff.sort_values(by='current_value', ascending=True).reset_index(drop=True)
-    bottom_slices = []
-    top_n = min(top_n, len(bottom_sorted_df))
-    for i in range(top_n):
-        row = bottom_sorted_df.iloc[i]
-        bottom_slices.append({
-            "sliceValue": row['slice_value'],
-            "metricValue": row['current_value'],
-            "avgOtherSlicesValue": row['avgOtherSlicesValue'],
-            "absoluteDiffFromAvg": row['absoluteDiffFromAvg'],
-            "absoluteDiffPercentFromAvg": row['absoluteDiffPercentFromAvg'],
-            "performanceRank": -1 * row['rankByPerformance']
-        })
 
-    return top_slices, bottom_slices
-
-def _compute_largest_and_smallest_slice(dff):
+def _compute_top_bottom_slices(merged_df: pd.DataFrame, top_n: int = 3) -> (list, list):
     """
-    Identify largest slice by currentShareOfVolumePercent, and smallest slice,
-    plus record who was largest/smallest in the prior period.
-    Returns (largestSliceDict, smallestSliceDict).
+    Identify the top and bottom slices by current performance (val_t1).
+    Returns (topSlicesByPerformance, bottomSlicesByPerformance).
     """
-    # largest current
-    largest_current = dff.sort_values(by='currentShareOfVolumePercent', ascending=False).head(1)
-    # smallest current
-    smallest_current = dff.sort_values(by='currentShareOfVolumePercent', ascending=True).head(1)
+    df_sorted_desc = merged_df.sort_values("val_t1", ascending=False).reset_index(drop=True)
+    df_sorted_asc = merged_df.sort_values("val_t1", ascending=True).reset_index(drop=True)
 
-    # largest prior
-    largest_prior = dff.sort_values(by='priorShareOfVolumePercent', ascending=False).head(1)
-    # smallest prior
-    smallest_prior = dff.sort_values(by='priorShareOfVolumePercent', ascending=True).head(1)
+    top_rows = df_sorted_desc.head(top_n)
+    bottom_rows = df_sorted_asc.head(top_n)
 
-    if len(largest_current)==1 and len(largest_prior)==1:
+    def to_dict(row):
+        return {
+            "sliceValue": row["slice_col"],
+            "metricValue": row["val_t1"],
+            "avgOtherSlicesValue": row.get("avgOtherSlicesValue", None),
+            "absoluteDiffFromAvg": row.get("absoluteDiffFromAvg", None),
+            "absoluteDiffPercentFromAvg": row.get("absoluteDiffPercentFromAvg", None),
+            "performanceRank": row.get("rank_performance", None)
+        }
+
+    top_list = [to_dict(r) for _, r in top_rows.iterrows()]
+    # For bottom slices, invert the rank if you want negative. 
+    bottom_list = []
+    for _, r in bottom_rows.iterrows():
+        tmp = to_dict(r)
+        if tmp["performanceRank"] is not None:
+            tmp["performanceRank"] = -1 * tmp["performanceRank"]
+        bottom_list.append(tmp)
+
+    return top_list, bottom_list
+
+
+def _largest_smallest_by_share(merged_df: pd.DataFrame) -> (dict, dict):
+    """
+    Return the largest and smallest slice by current share. Also figure out
+    who was largest/smallest by prior share. 
+    """
+    if "share_pct_t1" not in merged_df.columns or merged_df.empty:
+        return {}, {}
+
+    df_desc_current = merged_df.sort_values("share_pct_t1", ascending=False).reset_index(drop=True)
+    df_desc_prior = merged_df.sort_values("share_pct_t0", ascending=False).reset_index(drop=True)
+    df_asc_current = merged_df.sort_values("share_pct_t1", ascending=True).reset_index(drop=True)
+    df_asc_prior = merged_df.sort_values("share_pct_t0", ascending=True).reset_index(drop=True)
+
+    largest_dict = {}
+    smallest_dict = {}
+
+    if len(df_desc_current) > 0 and len(df_desc_prior) > 0:
         largest_dict = {
-            "sliceValue": largest_current.iloc[0]['slice_value'],
-            "currentShareOfVolumePercent": largest_current.iloc[0]['currentShareOfVolumePercent'],
-            "previousLargestSliceValue": largest_prior.iloc[0]['slice_value'],
-            "previousLargestSharePercent": largest_prior.iloc[0]['priorShareOfVolumePercent']
+            "sliceValue": df_desc_current.iloc[0]["slice_col"],
+            "currentShareOfVolumePercent": df_desc_current.iloc[0]["share_pct_t1"],
+            "previousLargestSliceValue": df_desc_prior.iloc[0]["slice_col"],
+            "previousLargestSharePercent": df_desc_prior.iloc[0]["share_pct_t0"]
         }
-    else:
-        largest_dict = {}
 
-    if len(smallest_current)==1 and len(smallest_prior)==1:
+    if len(df_asc_current) > 0 and len(df_asc_prior) > 0:
         smallest_dict = {
-            "sliceValue": smallest_current.iloc[0]['slice_value'],
-            "currentShareOfVolumePercent": smallest_current.iloc[0]['currentShareOfVolumePercent'],
-            "previousSmallestSliceValue": smallest_prior.iloc[0]['slice_value'],
-            "previousSmallestSharePercent": smallest_prior.iloc[0]['priorShareOfVolumePercent']
+            "sliceValue": df_asc_current.iloc[0]["slice_col"],
+            "currentShareOfVolumePercent": df_asc_current.iloc[0]["share_pct_t1"],
+            "previousSmallestSliceValue": df_asc_prior.iloc[0]["slice_col"],
+            "previousSmallestSharePercent": df_asc_prior.iloc[0]["share_pct_t0"]
         }
-    else:
-        smallest_dict = {}
 
     return largest_dict, smallest_dict
 
-def _compute_new_strongest_weakest(dff):
+
+def _strongest_weakest(merged_df: pd.DataFrame) -> (dict, dict):
     """
-    Identify the top slice by current_value, see who was top in prior_value,
-    and if they're different, we have a 'newStrongestSlice'.
-    Similarly for the weakest slice.
-
-    Return (newStrongestSliceDict, newWeakestSliceDict).
+    Identify the new strongest (highest val_t1) vs. prior strongest (highest val_t0).
+    Same for the weakest. If they differ, fill in the dict.
     """
-    # current top => highest current_value
-    current_top = dff.sort_values(by='current_value', ascending=False).head(1)
-    prior_top  = dff.sort_values(by='prior_value', ascending=False).head(1)
+    if merged_df.empty:
+        return {}, {}
 
-    # current bottom => lowest current_value
-    current_bottom = dff.sort_values(by='current_value', ascending=True).head(1)
-    prior_bottom  = dff.sort_values(by='prior_value', ascending=True).head(1)
+    df_current_desc = merged_df.sort_values("val_t1", ascending=False).reset_index(drop=True)
+    df_prior_desc = merged_df.sort_values("val_t0", ascending=False).reset_index(drop=True)
+    df_current_asc = merged_df.sort_values("val_t1", ascending=True).reset_index(drop=True)
+    df_prior_asc = merged_df.sort_values("val_t0", ascending=True).reset_index(drop=True)
 
-    strongest = {}
-    weakest   = {}
+    strongest_dict = {}
+    weakest_dict = {}
 
-    if len(current_top)==1 and len(prior_top)==1:
-        curr_slice = current_top.iloc[0]['slice_value']
-        prior_slice= prior_top.iloc[0]['slice_value']
+    if len(df_current_desc) > 0 and len(df_prior_desc) > 0:
+        curr_slice = df_current_desc.iloc[0]["slice_col"]
+        prior_slice = df_prior_desc.iloc[0]["slice_col"]
         if curr_slice != prior_slice:
-            strongest = {
+            strongest_dict = {
                 "sliceValue": curr_slice,
                 "previousStrongestSliceValue": prior_slice,
-                "currentValue": current_top.iloc[0]['current_value'],
-                "priorValue":  current_top.iloc[0]['prior_value'],
+                "currentValue": df_current_desc.iloc[0]["val_t1"],
+                "priorValue": df_current_desc.iloc[0]["val_t0"]
             }
-            abs_delta = strongest["currentValue"] - strongest["priorValue"]
-            strongest["absoluteDelta"] = abs_delta
-            if strongest["priorValue"] == 0:
-                strongest["relativeDeltaPercent"] = np.nan
-            else:
-                strongest["relativeDeltaPercent"] = (abs_delta / strongest["priorValue"])*100
+            abs_delta = strongest_dict["currentValue"] - strongest_dict["priorValue"]
+            strongest_dict["absoluteDelta"] = abs_delta
+            strongest_dict["relativeDeltaPercent"] = (
+                (abs_delta / strongest_dict["priorValue"]) * 100
+                if strongest_dict["priorValue"] != 0 else np.nan
+            )
 
-    if len(current_bottom)==1 and len(prior_bottom)==1:
-        curr_slice = current_bottom.iloc[0]['slice_value']
-        prior_slice= prior_bottom.iloc[0]['slice_value']
+    if len(df_current_asc) > 0 and len(df_prior_asc) > 0:
+        curr_slice = df_current_asc.iloc[0]["slice_col"]
+        prior_slice = df_prior_asc.iloc[0]["slice_col"]
         if curr_slice != prior_slice:
-            weakest = {
+            weakest_dict = {
                 "sliceValue": curr_slice,
                 "previousWeakestSliceValue": prior_slice,
-                "currentValue": current_bottom.iloc[0]['current_value'],
-                "priorValue":  current_bottom.iloc[0]['prior_value'],
+                "currentValue": df_current_asc.iloc[0]["val_t1"],
+                "priorValue": df_current_asc.iloc[0]["val_t0"]
             }
-            abs_delta = weakest["currentValue"] - weakest["priorValue"]
-            weakest["absoluteDelta"] = abs_delta
-            if weakest["priorValue"] == 0:
-                weakest["relativeDeltaPercent"] = np.nan
-            else:
-                weakest["relativeDeltaPercent"] = (abs_delta / weakest["priorValue"])*100
+            abs_delta = weakest_dict["currentValue"] - weakest_dict["priorValue"]
+            weakest_dict["absoluteDelta"] = abs_delta
+            weakest_dict["relativeDeltaPercent"] = (
+                (abs_delta / weakest_dict["priorValue"]) * 100
+                if weakest_dict["priorValue"] != 0 else np.nan
+            )
 
-    return strongest, weakest
+    return strongest_dict, weakest_dict
 
-def _compute_comparison_highlights(dff):
+
+def _highlight_comparison(merged_df: pd.DataFrame) -> list:
     """
-    For demonstration, let's compare the top 2 slices by current_value.
-    We'll compute the performance gap and how it changed from the prior period.
-
-    Return a list with up to 1 highlight (if we have at least 2 slices).
+    Simple example: Compare the top 2 slices by current_value. Compute gap vs. prior gap.
     """
-    highlight_list = []
-    sorted_current = dff.sort_values(by='current_value', ascending=False).reset_index(drop=True)
-    if len(sorted_current) >= 2:
-        sliceA = sorted_current.iloc[0]
-        sliceB = sorted_current.iloc[1]
-        # performanceGapPercent => (A-B)/B * 100
-        gap_now = None
-        if sliceB['current_value'] != 0:
-            gap_now = ((sliceA['current_value'] - sliceB['current_value']) / sliceB['current_value'])*100
-        # gap in prior period
-        gap_prior = None
-        if sliceB['prior_value'] != 0:
-            gap_prior = ((sliceA['prior_value'] - sliceB['prior_value']) / sliceB['prior_value'])*100
+    if len(merged_df) < 2:
+        return []
+    df_desc = merged_df.sort_values("val_t1", ascending=False).reset_index(drop=True)
+    sliceA = df_desc.iloc[0]
+    sliceB = df_desc.iloc[1]
+    # current gap
+    gap_now = None
+    if sliceB["val_t1"] != 0:
+        gap_now = (sliceA["val_t1"] - sliceB["val_t1"]) / sliceB["val_t1"] * 100
+    # prior gap
+    gap_prior = None
+    if sliceB["val_t0"] != 0:
+        gap_prior = (sliceA["val_t0"] - sliceB["val_t0"]) / sliceB["val_t0"] * 100
+    gap_change = None
+    if gap_now is not None and gap_prior is not None:
+        gap_change = gap_now - gap_prior
 
-        gap_change = None
-        if gap_now is not None and gap_prior is not None:
-            gap_change = gap_now - gap_prior
+    return [{
+        "sliceA": sliceA["slice_col"],
+        "currentValueA": sliceA["val_t1"],
+        "priorValueA": sliceA["val_t0"],
+        "sliceB": sliceB["slice_col"],
+        "currentValueB": sliceB["val_t1"],
+        "priorValueB": sliceB["val_t0"],
+        "performanceGapPercent": gap_now,
+        "gapChangePercent": gap_change
+    }]
 
-        highlight_list.append({
-            "sliceA": sliceA['slice_value'],
-            "currentValueA": sliceA['current_value'],
-            "priorValueA": sliceA['prior_value'],
 
-            "sliceB": sliceB['slice_value'],
-            "currentValueB": sliceB['current_value'],
-            "priorValueB": sliceB['prior_value'],
-
-            "performanceGapPercent": gap_now,
-            "gapChangePercent": gap_change
-        })
-    return highlight_list
-
-def _compute_historical_slice_rankings(
-    ledger_df,
-    metric_id: str,
-    dimension_name: str,
-    num_periods=8
-):
+def _compute_historical_slice_rankings(ledger_df: pd.DataFrame,
+                                       metric_id: str,
+                                       dimension_name: str,
+                                       num_periods: int = 8) -> Dict[str, Any]:
     """
-    Example: for the last `num_periods` weeks, find the top 5 slices each period by sum of metric_value.
-    We'll produce:
-    {
-      "periodsAnalyzed": 8,
-      "periodRankings": [
-        {
-          "startDate": "...",
-          "endDate": "...",
-          "top5SlicesByPerformance": [
-            { "sliceValue": ..., "metricValue": ...}, ...
-          ]
-        }, ...
-      ]
-    }
-
-    Implementation: We'll look at the last num_periods weekly intervals from today.
-    This is a simplified approach. For day or month grain, you'd adapt similarly.
+    Example approach: For the last `num_periods` weeks, pick top 5 slices in each period.
     """
-    # We'll do a simple approach: find the last num_periods weeks counting backwards from "today".
-    # For real usage, you'd parameterize the grain.
-    # Let "today" = max date in ledger for that metric/dimension, or just datetime.now().
-    # We'll do something simplistic here.
-
-    if ledger_df.empty:
-        return {
-            "periodsAnalyzed": 0,
-            "periodRankings": []
-        }
-
-    # filter
-    dff = ledger_df[
-        (ledger_df['metric_id'] == metric_id) &
-        (ledger_df['dimension'] == dimension_name)
-    ].copy()
+    dff = ledger_df.copy()
+    dff["date"] = pd.to_datetime(dff["date"])
+    dff = dff[
+        (dff["metric_id"] == metric_id) &
+        (dff["dimension"] == dimension_name)
+    ]
     if dff.empty:
-        return {
-            "periodsAnalyzed": 0,
-            "periodRankings": []
-        }
+        return {"periodsAnalyzed": 0, "periodRankings": []}
 
-    # naive approach: let end_of_latest = max(dff['date'])
-    end_of_latest = pd.to_datetime(dff['date'].max())
-    # We'll build weekly intervals
-    periodRankings = []
+    end_of_latest = dff["date"].max()
+    period_rankings = []
     current_end = end_of_latest
 
-    for i in range(num_periods):
+    for _ in range(num_periods):
         period_start = (current_end - pd.Timedelta(days=6)).normalize()
-        # slice that period
-        mask = (dff['date'] >= period_start) & (dff['date'] <= current_end)
-        d_slice = dff[mask].groupby('slice_value')['metric_value'].sum().reset_index()
-        d_slice.sort_values('metric_value', ascending=False, inplace=True)
-        # pick top 5
-        top5 = d_slice.head(5)
-        top5_list = [
-            {"sliceValue": row['slice_value'], "metricValue": row['metric_value']}
-            for _, row in top5.iterrows()
-        ]
-        periodRankings.append({
+        mask = (dff["date"] >= period_start) & (dff["date"] <= current_end)
+        tmp = dff[mask].groupby("slice_value")["metric_value"].sum().reset_index()
+        tmp.sort_values("metric_value", ascending=False, inplace=True)
+        top5 = tmp.head(5)
+        top5_list = []
+        for _, row in top5.iterrows():
+            top5_list.append({
+                "sliceValue": row["slice_value"],
+                "metricValue": row["metric_value"]
+            })
+        period_rankings.append({
             "startDate": str(period_start.date()),
             "endDate": str(current_end.date()),
             "top5SlicesByPerformance": top5_list
         })
-        # move to previous interval
         current_end = (period_start - pd.Timedelta(days=1))
 
-    # reverse so the oldest is first
-    periodRankings.reverse()
-
+    period_rankings.reverse()
     return {
         "periodsAnalyzed": num_periods,
-        "periodRankings": periodRankings
+        "periodRankings": period_rankings
     }
 
 
@@ -685,19 +364,15 @@ def run_dimension_analysis(
     metric_id: str,
     dimension_name: str,
     grain: str,
-    analysis_date: str or pd.Timestamp
+    analysis_date: Union[str, pd.Timestamp]
 ) -> Dict[str, Any]:
     """
-    Orchestrates a full "DimensionAnalysis" Pattern for the given metric, dimension,
-    and time grain. Compares the current period to the prior period, calculates slice-level
-    stats, ranks slices by performance & share, identifies top/bottom slices, largest/smallest,
-    newly strongest/weakest, produces comparison highlights, and builds a historical slice ranking.
-
-    Returns a dict matching the JSON structure specified in the pattern requirements.
+    Perform slice-level analysis for a given metric & dimension at the specified grain.
+    Uses the dimension-analysis primitives to compare current vs. prior, compute shares,
+    rank slices, etc.
     """
-    # Quick check: does ledger_df contain this dimension?
-    if not ((ledger_df['dimension'] == dimension_name) & (ledger_df['metric_id'] == metric_id)).any():
-        # This metric might not have the requested dimension. Skip or return an empty structure.
+    # Basic validation
+    if ledger_df.empty or metric_id not in ledger_df["metric_id"].unique():
         return {
             "schemaVersion": "1.0.0",
             "patternName": "DimensionAnalysis",
@@ -720,77 +395,102 @@ def run_dimension_analysis(
             }
         }
 
-    # 1) get the current vs prior data
-    current_df, prior_df, merged_df = _compute_current_vs_prior(
-        ledger_df, metric_id, dimension_name, grain, analysis_date
+    # 1) Determine current and prior period ranges
+    (start_date, end_date) = _get_period_range_for_grain(analysis_date, grain)
+    (prior_start, prior_end) = _get_prior_period_range(start_date, end_date, grain)
+
+    # 2) Use the dimension analysis primitive to compare slices between the two periods
+    #    We'll rename columns for clarity after the function returns.
+    compare_df = compare_dimension_slices_over_time(
+        df=ledger_df[
+            (ledger_df["metric_id"] == metric_id) &
+            (ledger_df["time_grain"] == grain) &
+            (ledger_df["dimension"] == dimension_name)
+        ],
+        slice_col="slice_value",
+        date_col="date",
+        value_col="metric_value",
+        t0=str(prior_start.date()),
+        t1=str(start_date.date()),  # We assume the 'start_date' is the anchor date for T1
+        agg="sum"
     )
-    if merged_df.empty:
-        return {
-            "schemaVersion": "1.0.0",
-            "patternName": "DimensionAnalysis",
-            "metricId": metric_id,
-            "grain": grain,
-            "analysisDate": str(analysis_date),
-            "evaluationTime": str(datetime.datetime.now()),
-            "dimensionName": dimension_name,
-            "slices": [],
-            "topSlicesByPerformance": [],
-            "bottomSlicesByPerformance": [],
-            "largestSlice": {},
-            "smallestSlice": {},
-            "newStrongestSlice": {},
-            "newWeakestSlice": {},
-            "comparisonHighlights": [],
-            "historicalSliceRankings": {
-                "periodsAnalyzed": 0,
-                "periodRankings": []
-            }
-        }
 
-    # 2) compute slice-level stats
-    expanded = _compute_slice_statistics(merged_df)
-    expanded = _compute_ranks_and_streaks(expanded)
+    # The returned DataFrame has columns:
+    # [slice_value, val_t0, val_t1, abs_diff, pct_diff]
 
-    # build slices array for the final JSON
-    slices_list = []
-    for _, row in expanded.iterrows():
-        # each row => build a dictionary
-        slices_list.append({
-            "sliceValue": row['slice_value'],
-            "currentValue": row['current_value'],
-            "priorValue": row['prior_value'],
-            "absoluteChange": row['absoluteChange'],
-            "relativeChangePercent": row['relativeChangePercent'],
-            "currentShareOfVolumePercent": row['currentShareOfVolumePercent'],
-            "priorShareOfVolumePercent": row['priorShareOfVolumePercent'],
-            "shareOfVolumeChangePercent": row['shareOfVolumeChangePercent'],
-            "absoluteMarginalImpact": row['absoluteMarginalImpact'],
-            "relativeMarginalImpactPercent": row['relativeMarginalImpactPercent'],
-            "avgOtherSlicesValue": row['avgOtherSlicesValue'],
-            "absoluteDiffFromAvg": row['absoluteDiffFromAvg'],
-            "absoluteDiffPercentFromAvg": row['absoluteDiffPercentFromAvg'],
-            "consecutiveAboveAvgStreak": row['consecutiveAboveAvgStreak'],
-            "rankByPerformance": row['rankByPerformance'],
-            "rankByShare": row['rankByShare']
-        })
+    # 3) Compute share of volume for T0 and T1
+    #    We'll need to do it separately for T0 and T1, then merge.
+    t0_df = compare_df[["slice_value", "val_t0"]].copy()
+    t0_df = t0_df.rename(columns={"val_t0": "aggregated_value"})
+    t0_df = compute_slice_shares(t0_df, "slice_value", val_col="aggregated_value", share_col_name="share_pct_t0")
 
-    # 3) top & bottom slices
-    top_slices, bottom_slices = _compute_top_and_bottom_slices(expanded)
+    t1_df = compare_df[["slice_value", "val_t1"]].copy()
+    t1_df = t1_df.rename(columns={"val_t1": "aggregated_value"})
+    t1_df = compute_slice_shares(t1_df, "slice_value", val_col="aggregated_value", share_col_name="share_pct_t1")
 
-    # 4) largest & smallest slices by share
-    largest_slice, smallest_slice = _compute_largest_and_smallest_slice(expanded)
+    merged = compare_df.merge(t0_df[["slice_value", "share_pct_t0"]], on="slice_value", how="left")
+    merged = merged.merge(t1_df[["slice_value", "share_pct_t1"]], on="slice_value", how="left")
 
-    # 5) newly strongest & weakest
-    new_strongest, new_weakest = _compute_new_strongest_weakest(expanded)
+    # We'll define share_diff = share_pct_t1 - share_pct_t0
+    merged["share_diff"] = merged["share_pct_t1"] - merged["share_pct_t0"]
 
-    # 6) comparison highlights
-    comparison_highlights = _compute_comparison_highlights(expanded)
+    # 4) Compute difference from average (for val_t1)
+    merged = merged.rename(columns={"slice_value": "slice_col"})
+    merged = _difference_from_average(merged, current_col="val_t1")
 
-    # 7) historical slice rankings
-    #    We'll assume weekly approach for demonstration, but you might param by `grain`
+    # 5) Rank slices by performance (val_t1) and share (share_pct_t1)
+    #    We'll store ranks in new columns rank_performance, rank_share
+    #    Using your rank_metric_slices for val_t1
+    performance_ranks = rank_metric_slices(
+        agg_df=merged[["slice_col", "val_t1"]].rename(columns={"val_t1": "aggregated_value"}),
+        val_col="aggregated_value",
+        top_n=len(merged),
+        ascending=False
+    )
+    # performance_ranks returns a subset of rows or the same shape? 
+    # Typically it returns the top/bottom. We'll just keep the order. We'll join on slice_col.
+    performance_ranks = performance_ranks.reset_index(drop=True).reset_index().rename(columns={"index": "perf_rank"})
+    performance_ranks["perf_rank"] = performance_ranks["perf_rank"] + 1
+
+    # We'll do a similar approach for share
+    share_ranks = rank_metric_slices(
+        agg_df=merged[["slice_col", "share_pct_t1"]].rename(columns={"share_pct_t1": "aggregated_value"}),
+        val_col="aggregated_value",
+        top_n=len(merged),
+        ascending=False
+    )
+    share_ranks = share_ranks.reset_index(drop=True).reset_index().rename(columns={"index": "share_rank"})
+    share_ranks["share_rank"] = share_ranks["share_rank"] + 1
+
+    merged = merged.merge(
+        performance_ranks[["slice_col", "perf_rank"]],
+        on="slice_col", how="left"
+    ).merge(
+        share_ranks[["slice_col", "share_rank"]],
+        on="slice_col", how="left"
+    )
+
+    merged = merged.rename(columns={"perf_rank": "rank_performance", "share_rank": "rank_share"})
+
+    # 6) Build the final "slices" list
+    slices_list = _build_slices_list(merged)
+
+    # 7) Identify top and bottom slices by performance
+    top_slices, bottom_slices = _compute_top_bottom_slices(merged)
+
+    # 8) Largest & smallest slices by share
+    largest_slice, smallest_slice = _largest_smallest_by_share(merged)
+
+    # 9) Check for new strongest / weakest
+    new_strongest, new_weakest = _strongest_weakest(merged)
+
+    # 10) Comparison highlights
+    comparison_highlights = _highlight_comparison(merged)
+
+    # 11) Historical slice rankings
     historical_rankings = _compute_historical_slice_rankings(ledger_df, metric_id, dimension_name, num_periods=8)
 
-    # Finally, assemble the output
+    # Assemble final output
     result = {
         "schemaVersion": "1.0.0",
         "patternName": "DimensionAnalysis",
